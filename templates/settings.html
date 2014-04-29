@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title>Narwhal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <link rel="stylesheet" href="//netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css">
+
+    <script src="https://code.jquery.com/jquery-1.11.0.min.js"></script>
+</head>
+<body>
+<div class="container">
+<div class="page-header">
+<h1>Narwhal Settings</h1>
+</div>
+<form action="/manage_reddit_account" method="post">
+    <h3>Linked Accounts</h3>
+    {% if not account_error_message is none %}
+        <div class="alert alert-warning"><strong>{{ account_error_message }}</strong></div>
+    {% endif %}
+    <table style="margin-bottom: 10px">
+        {% for account in accounts %}
+        <tr>
+            <td style="min-width: 200px">{{ account.name }}</td>
+            <td><button name="action" value="remove_{{ account.id }}" type="submit" class="btn btn-xs btn-danger">Remove</button></td>
+        </tr>
+        {% endfor %}
+    </table>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
+    <button value="add" name="action" type="submit" class="btn btn-primary">Add Account</button>
+</form>
+<form role="form" action="/settings" method="post" data-toggle="validator" id="settings-form">
+    <h3>Settings</h3>
+    {% if not error_message is none %}
+        <div class="alert alert-danger"><strong>Error saving settings.</strong> {{ error_message }}</div>
+    {% endif %}
+    {% if success_message %}
+        <div class="alert alert-success"><strong>Settings saved.</strong></div>
+    {% endif %}
+    <div class="form-group">
+        <label for="post_limit">Only show me posts that reach at least this spot on my front page</label>
+        <input id="post_limit" name="post_limit" type="number" class="form-control" value="{{ post_limit }}" required min="1" max="25"/>
+        <div class="help-block">Must be between 1 and 25</div>
+    </div>
+    <div class="checkbox">
+        <label>
+            <input id="send_nsfw" name="send_nsfw" type="checkbox" {{ 'checked' if send_nsfw }}/> Send NSFW Posts
+        </label>
+    </div>
+    <div class="form-group">
+        <label for="nsfw_overrides">NSFW Overrides (sent even if NSFW posts are disabled)</label>
+        <input maxlength="500" id="nsfw_overrides" name="nsfw_overrides" type="text" class="form-control" value="{{ nsfw_overrides | join(' ') }}" placeholder="pics mylittlepony ..."/>
+        <p class="help-block">Separate with spaces</p>
+    </div>
+    <div class="checkbox">
+        <label>
+            <input id="send_pm" name="send_pm" type="checkbox" {{ 'checked' if send_pm }}/> Send Private Messages
+        </label>
+    </div>
+    <div class="checkbox">
+        <label>
+            <input id="group_posts" name="group_posts" type="checkbox"
+                    {{ 'checked' if group_posts }}/> Bundle New Posts and PMs into a Single Timeline Card
+        </label>
+    </div>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
+    <button type="submit" class="btn btn-primary">Save</button>
+</form>
+</div>
+
+<script type="text/javascript">
+    $(document).ready(function() {
+        $("#settings-form").submit(function(event) {
+            if (!validate()) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        })
+    });
+
+    function validate() {
+        return validatePostLimit();
+    }
+
+    function validatePostLimit() {
+        var post_limit = $("#post_limit");
+        if (!isInt(post_limit.val())) {
+            setError(post_limit, "Value must be a number.");
+            return false;
+        }
+
+        if (post_limit.val() < 1 || post_limit.val() > 25) {
+            setError(post_limit, "Value must be between 1 and 25 (inclusive).");
+            return false;
+        }
+
+        clearError(post_limit);
+        return true;
+    }
+
+    function setError(element, message) {
+        var parent = element.parent();
+        parent.find(".help-block").not(".validator-generated").hide();
+        parent.find(".help-block.validator-generated").remove();
+        parent.append("<div class=\"help-block validator-generated\">" + message + "</div>");
+        parent.addClass("has-error");
+    }
+
+    function clearError(element) {
+        var parent = element.parent();
+        parent.find(".help-block.validator-generated").remove();
+        parent.find(".help-block").show();
+        parent.removeClass("has-error");
+    }
+
+    function isInt(n) {
+        return !isNaN(parseFloat(n)) && isFinite(n) && n % 1 === 0;
+    }
+</script>
+</body>
+</html>
