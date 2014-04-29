@@ -42,8 +42,7 @@ def send_updates():
         'SELECT g.credentials as google_credentials, r.credentials as reddit_credentials, g.id as google_id, '
         's.send_nsfw, s.send_pm, s.nsfw_overrides, s.post_limit, r.id as reddit_id, s.group_posts '
         'FROM "GoogleAccount" g INNER JOIN "RedditAccount" r ON g.id = r.google_id '
-        'INNER JOIN "AccountSettings" s ON g.id = s.google_id '
-        'GROUP BY google')
+        'INNER JOIN "AccountSettings" s ON g.id = s.google_id')
 
     for row in account_cursor:
         logger.info('Sending new posts for Google user {0:s} for Reddit ID {1:s}'.format(row.google_id, row.reddit_id))
