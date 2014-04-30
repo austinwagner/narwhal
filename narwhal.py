@@ -170,6 +170,9 @@ def settings():
             if post_limit < 1 or post_limit > 25:
                 raise ValueError('Post limit must be between 1 and 25.')
 
+            if len(request.form.get('nsfw_overrides', '') > 500):
+                raise ValueError('NSFW Overrides is limited to 500 characters.')
+
             db = get_db()
             cur = db.cursor()
             cur.execute('UPDATE "AccountSettings" '
