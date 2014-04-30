@@ -34,63 +34,66 @@ def send_updates():
 
     db = get_db()
     account_cursor = db.cursor()
-    post_cursor = db.cursor()
-    pm_cursor = db.curosr()
-    send_post_update_cursor = db.cursor()
+    cursor = db.cursor()
 
     account_cursor.execute(
-        'SELECT g.credentials as google_credentials, r.credentials as reddit_credentials, g.id as google_id, '
-        's.send_nsfw, s.send_pm, s.nsfw_overrides, s.post_limit, r.id as reddit_id, s.group_posts '
+        'SELECT t1.*, s.send_nsfw, s.send_pm, s.nsfw_overrides, s.post_limit, s.group_posts FROM '
+        '(SELECT g.id AS google_id, g.credentials AS google_credentials, '
+        'array_agg(r.credentials) AS reddit_credentials '
         'FROM "GoogleAccount" g INNER JOIN "RedditAccount" r ON g.id = r.google_id '
-        'INNER JOIN "AccountSettings" s ON g.id = s.google_id')
+        'GROUP BY g.id, g.credentials) t1 '
+        'INNER JOIN "AccountSettings" s ON t1.google_id = s.google_id')
 
     for row in account_cursor:
-        logger.info('Sending new posts for Google user {0:s} for Reddit ID {1:s}'.format(row.google_id, row.reddit_id))
+        logger.info('Sending new posts for Google user {0:s}'.format(row.google_id))
         google_credentials = cPickle.loads(str(row.google_credentials))
-        reddit_credentials = cPickle.loads(str(row.reddit_credentials))
-        frontpage = reddit.get(reddit_credentials, '/hot.json?limit=' + str(row.post_limit))['data']['children']
 
-        posts = {post['data']['id']: post['data'] for post in frontpage
-                 if should_send_post(post['data'], row.send_nsfw, row.nsfw_overrides)}
+        posts = {}
+        pms = {}
+        for pickled_reddit_credentials in row.reddit_credentials:
+            reddit_credentials = cPickle.loads(str(pickled_reddit_credentials))
+            frontpage = reddit.get(reddit_credentials, '/hot.json?limit=' + str(row.post_limit))['data']['children']
 
-        post_cursor.execute('SELECT i.id FROM UNNEST(%s) AS i(id) LEFT JOIN "SentPost" s ON i.id = s.post_id '
-                            'WHERE s.post_id IS NULL', (posts.keys(),))
-        post_count = 0 if post_cursor.rowcount == -1 else post_cursor.rowcount
+            for post in (p['data'] for p in frontpage):
+                if should_send_post(post, row.send_nsfw, row.nsfw_overrides):
+                    posts[post['id']] = post
 
-        pm_count = 0
-        if row.send_pm:
-            inbox = reddit.get(reddit_credentials, '/message/inbox.json')['data']['children']
-            pms = {pm['data']['id']: pm['data'] for pm in inbox
-                   if pm['data'].get('new', False) and pm['data'].get('name', '').split('_', 1)[0] == 't4'}
-            pm_cursor.execute('SELECT i.id '
-                              'FROM UNNEST(%s) AS i(id) LEFT JOIN "SentPrivateMessage" s ON i.id = s.pm_id '
-                              'WHERE s.pm_id IS NULL', (pms.keys(),))
-            pm_count = 0 if pm_cursor.rowcount == -1 else pm_cursor.rowcount
+            cursor.execute('SELECT post_id FROM "SentPost" '
+                           'WHERE post_id=ANY(%s) AND google_id=%s', (posts.keys(), row.google_id))
+            for post_id in (r.post_id for r in cursor):
+                del posts[post_id]
 
-        send_notification = pm_count + post_count == 1 or not row.group_posts
+            if row.send_pm:
+                inbox = reddit.get(reddit_credentials, '/message/inbox.json')['data']['children']
+                for pm in (p['data'] for p in inbox):
+                    if pm.get('new', False) and pm.get('name', '').split('_', 1)[0] == 't4':
+                        pms[pm['id']] = pm
 
+                cursor.execute('SELECT pm_id FROM "SentPrivateMessage" '
+                               'WHERE pm_id=ANY(%s) AND google_id=%s', (pms.keys(), row.google_id))
+                for pm_id in (r.pm_id for r in cursor):
+                    del pms[pm_id]
+
+        send_notification = len(posts) + len(pms) == 1 or not row.group_posts
         bundle_id = uuid1().hex
-        for post_id in post_cursor:
-            add_post_to_timeline(google_credentials, posts[post_id[0]], bundle_id, send_notification)
-            send_post_update_cursor.execute(
-                'INSERT INTO "SentPost" (google_id, post_id) VALUES (%s,%s)', (row.google_id, post_id[0]))
+
+        for post_id, post in posts.iteritems():
+            add_post_to_timeline(google_credentials, post, bundle_id, send_notification)
+            cursor.execute('INSERT INTO "SentPost" (google_id, post_id) VALUES (%s,%s)', (row.google_id, post_id))
             db.commit()
 
-        if row.send_pm:
-            for pm_id in pm_cursor:
-                add_pm_to_timeline(google_credentials, pms[pm_id[0]], bundle_id, send_notification)
-                send_post_update_cursor.execute(
-                    'INSERT INTO "SentPrivateMessage" (google_id, pm_id) VALUES (%s,%s)', (row.google_id, pm_id[0]))
-                db.commit()
+        for pm_id, pm in pms.iteritems():
+            add_pm_to_timeline(google_credentials, pm, bundle_id, send_notification)
+            cursor.execute('INSERT INTO "SentPrivateMessage" (google_id, pm_id) VALUES (%s,%s)', (row.google_id, pm_id))
+            db.commit()
 
-        if row.group_posts and post_count + pm_count > 1:
-            send_bundle_cover(google_credentials, bundle_id, post_count, pm_count, row.send_pm)
+        if row.group_posts and len(posts) + len(pms) > 1:
+            send_bundle_cover(google_credentials, bundle_id, len(posts), len(pms), row.send_pm)
 
-        logger.info('Sent {0:d} posts and {1:d} PMs'.format(post_count, pm_count))
+        logger.info('Sent {0:d} posts and {1:d} PMs'.format(len(posts), len(pms)))
 
 
 def add_post_to_timeline(credentials, post, bundle_id, send_notification):
-
     timeline_item = {
         'text': post['title'],
         'speakableType': 'Reddit post',
@@ -239,7 +242,7 @@ def send_bundle_cover(credentials, bundle_id, post_count, pm_count, send_pm):
 def generate_cover_html(post_count, pm_count, send_pm):
     return ('<article style="left: 0px; visibility: visible;">'
             '<section><div class="layout-figure"><div class="align-center">'
-            '<img src="http://www.redditstatic.com/about/assets/reddit-alien.png" width="158" height="220">'
+            '<img src="' + app.config['BUNDLE_COVER_LOGO_URL'] + '" width="190" height="190">'
             '</div><div><div class="text-large">'
             '<p class="green">' + pluralize_new('Post', post_count) + '</p>'
             '<p class="red">' + pluralize_new('PM', pm_count) if send_pm else '' + '</p>'
