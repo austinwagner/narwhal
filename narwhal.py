@@ -1,4 +1,4 @@
-from flask import Flask, redirect, request, session, render_template, make_response, g, url_for
+from flask import Flask, redirect, request, session, render_template, make_response, g, url_for, abort
 from oauth2client.client import OAuth2WebServerFlow
 from psycopg2._psycopg import IntegrityError
 from OAuth2RedditFlow import OAuth2RedditFlow
@@ -66,7 +66,7 @@ def google_authorize_callback():
     if request.args['state'] != session['state']:
         logger.warn('Host: {0:s} - Google authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
                     .format(request.host, request.args['state'], session['state']))
-        return make_response('Invalid state parameter', 401)
+        abort(401)
 
     credentials = google_flow.step2_exchange(request.args)
     user_id = credentials.id_token['id']
@@ -101,7 +101,7 @@ def reddit_authorize_callback():
     if request.args['state'] != session['state']:
         logger.warn('Host: {0:s} - Reddit authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
                     .format(request.host, request.args['state'], session['state']))
-        return make_response('Invalid state parameter', 401)
+        return abort(401)
 
     if request.args.get('error') == 'access_denied':
         return redirect(url_for('settings'))
@@ -131,7 +131,7 @@ def manage_reddit_account():
     if request.form['csrf_token'] != session['csrf_token']:
         logger.warn('Host: {0:s} - Settings page csrf mismatch. Got "{1:s}", expected "{2:s}"'
                     .format(request.host, request.form['csrf_token'], session['csrf_token']))
-        return make_response('Invalid CSRF token', 401)
+        return abort(401)
 
     if request.form['action'] == 'add':
         logger.info('Host: {0:s} - Adding Reddit account'.format(request.host))
@@ -159,7 +159,7 @@ def settings():
         if request.form['csrf_token'] != session['csrf_token']:
             logger.warn('Host: {0:s} - Settings page csrf mismatch. Got "{1:s}", expected "{2:s}"'
                         .format(request.host, request.form['csrf_token'], session['csrf_token']))
-            return make_response('Invalid CSRF token', 401)
+            abort(401)
 
         try:
             try:
@@ -212,6 +212,14 @@ def settings():
 def generate_csrf_token():
     return ''.join(random.choice(string.ascii_uppercase + string.digits)
                    for _ in xrange(32))
+
+
+@app.errorhandler(500)
+@app.errorhandler(403)
+@app.errorhandler(404)
+@app.errorhandler(401)
+def error_page(e):
+    return render_template('error_page.html', error_code=e.code), e.code
 
 
 if __name__ == '__main__':
