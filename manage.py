@@ -145,6 +145,8 @@ def add_post_to_timeline(credentials, post, bundle_id, send_notification):
             'payload': 'http://www.reddit.com' + post['permalink'],
             'values': [{'displayName': 'View comments'}]
         })
+    else:
+        timeline_item['menuItems'][0]['values'] = [{'displayName': 'View post'}]
 
     if send_notification:
         timeline_item['notification'] = {'level': 'DEFAULT'}
