@@ -5,3 +5,5 @@
 .idea/dataSources.xml
 config.py
 .vagrant
+*.pyc
+Thumbs.db
