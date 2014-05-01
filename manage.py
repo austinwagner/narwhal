@@ -49,14 +49,6 @@ imgur_album_regex = re.compile('<meta name="twitter:image0:src" content="(?P<url
 
 
 @manager.command
-def test():
-    db = get_db()
-    cur = db.cursor()
-    cur.execute('SELECT * FROM "SentPost"')
-    print(cur.rowcount)
-
-
-@manager.command
 def send_updates():
     reddit = RedditRateLimiter()
 
