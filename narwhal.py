@@ -52,7 +52,8 @@ google_flow = OAuth2WebServerFlow(client_id=app.config['GOOGLE_CLIENT_ID'],
                                   client_secret=app.config['GOOGLE_CLIENT_SECRET'],
                                   redirect_uri='http://' + app.config['HOST_ADDRESS'] + '/google_authorize_callback',
                                   scope=['profile',
-                                         'https://www.googleapis.com/auth/glass.timeline'],
+                                         'https://www.googleapis.com/auth/glass.timeline',
+                                         'email'],
                                   user_agent=app.config['USER_AGENT'])
 reddit = RedditRateLimiter()
 
@@ -97,17 +98,18 @@ def google_authorize_callback():
 
     credentials = google_flow.step2_exchange(request.args)
     user_id = credentials.id_token['id']
+    name = credentials.id_token['email']
     db = get_db()
     cur = db.cursor()
     cur.execute('SELECT COUNT(1) FROM "GoogleAccount" WHERE id=%s', (user_id,))
     if cur.fetchone()[0] == 0:
-        logger.debug('Host: {0:s} - Saving Google authorization for user {1:s}'.format(request.host, user_id))
-        cur.execute('INSERT INTO "GoogleAccount" (id, credentials) VALUES (%s,%s)',
-                    (user_id, psycopg2.Binary(cPickle.dumps(credentials, -1))))
+        logger.debug('Host: {0:s} - Saving Google authorization for user {1:s}'.format(request.host, name))
+        cur.execute('INSERT INTO "GoogleAccount" (id, credentials, "name") VALUES (%s,%s,%s)',
+                    (user_id, psycopg2.Binary(cPickle.dumps(credentials, -1)), name))
         cur.execute('INSERT INTO "AccountSettings" (google_id) VALUES (%s)', (user_id,))
         db.commit()
     else:
-        logger.debug('Host: {0:s} - Found Google authorization for user {1:s}'.format(request.host, user_id))
+        logger.debug('Host: {0:s} - Found Google authorization for user {1:s}'.format(request.host, name))
 
     session['user_id'] = user_id
 

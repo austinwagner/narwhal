@@ -27,6 +27,7 @@
 
 from flask_script import Manager
 import cPickle
+from oauth2client.client import AccessTokenRefreshError
 from reddit import RedditRateLimiter
 from narwhal import app, get_db
 from httplib2 import Http
@@ -66,56 +67,83 @@ def send_updates():
     account_cursor.execute(
         'SELECT t1.*, s.send_nsfw, s.send_pm, s.nsfw_overrides, s.post_limit, s.group_posts FROM '
         '(SELECT g.id AS google_id, g.credentials AS google_credentials, '
-        'array_agg(r.credentials) AS reddit_credentials '
+        'array_agg(r.credentials) AS reddit_credentials, array_agg(r.id) AS reddit_ids, '
+        'array_agg(r.name) AS reddit_names, g.name AS google_name '
         'FROM "GoogleAccount" g INNER JOIN "RedditAccount" r ON g.id = r.google_id '
-        'GROUP BY g.id, g.credentials) t1 '
+        'GROUP BY g.id, g.credentials '
+        'HAVING COUNT(r.id) > 0) t1 '
         'INNER JOIN "AccountSettings" s ON t1.google_id = s.google_id')
 
     for row in account_cursor:
-        logger.info('Sending new posts for Google user {0:s}'.format(row.google_id))
+        logger.info('Sending new posts for Google user {0:s}'.format(row.google_name))
         google_credentials = cPickle.loads(str(row.google_credentials))
 
         posts = {}
         pms = {}
-        for pickled_reddit_credentials in row.reddit_credentials:
-            reddit_credentials = cPickle.loads(str(pickled_reddit_credentials))
-            frontpage = reddit.get(reddit_credentials, '/hot.json?limit=' + str(row.post_limit))['data']['children']
+        for i in xrange(len(row.reddit_credentials)):
+            pickled_reddit_credentials = row.reddit_credentials[i]
+            reddit_id = row.reddit_ids[i]
+            reddit_name = row.reddit_names[i]
+            logger.info('Getting new posts for reddit user {0:s}'.format(reddit_name))
 
-            for post in (p['data'] for p in frontpage):
-                if should_send_post(post, row.send_nsfw, row.nsfw_overrides):
-                    posts[post['id']] = post
+            try:
+                reddit_credentials = cPickle.loads(str(pickled_reddit_credentials))
+                frontpage = reddit.get(reddit_credentials, '/hot.json?limit=' + str(row.post_limit))['data']['children']
 
-            cursor.execute('SELECT post_id FROM "SentPost" '
-                           'WHERE post_id=ANY(%s) AND google_id=%s', (posts.keys(), row.google_id))
-            for post_id in (r.post_id for r in cursor):
-                del posts[post_id]
+                for post in (p['data'] for p in frontpage):
+                    if should_send_post(post, row.send_nsfw, row.nsfw_overrides):
+                        posts[post['id']] = post
 
-            if row.send_pm:
-                inbox = reddit.get(reddit_credentials, '/message/inbox.json')['data']['children']
-                for pm in (p['data'] for p in inbox):
-                    if pm.get('new', False) and pm.get('name', '').split('_', 1)[0] == 't4':
-                        pms[pm['id']] = pm
+                cursor.execute('SELECT post_id FROM "SentPost" '
+                               'WHERE post_id=ANY(%s) AND google_id=%s', (posts.keys(), row.google_id))
+                for post_id in (r.post_id for r in cursor):
+                    del posts[post_id]
 
-                cursor.execute('SELECT pm_id FROM "SentPrivateMessage" '
-                               'WHERE pm_id=ANY(%s) AND google_id=%s', (pms.keys(), row.google_id))
-                for pm_id in (r.pm_id for r in cursor):
-                    del pms[pm_id]
+                if row.send_pm:
+                    inbox = reddit.get(reddit_credentials, '/message/inbox.json')['data']['children']
+                    for pm in (p['data'] for p in inbox):
+                        if pm.get('new', False) and pm.get('name', '').split('_', 1)[0] == 't4':
+                            pms[pm['id']] = pm
+
+                    cursor.execute('SELECT pm_id FROM "SentPrivateMessage" '
+                                   'WHERE pm_id=ANY(%s) AND google_id=%s', (pms.keys(), row.google_id))
+                    for pm_id in (r.pm_id for r in cursor):
+                        del pms[pm_id]
+            except KeyError as e:
+                if e.args[0] == 'access_token':
+                    logger.warn(
+                        'Failed to refresh a reddit token for reddit account {0:s} of Google user {1:s}. Removing...'
+                        .format(reddit_name, row.google_name))
+                    cursor.execute('DELETE FROM "RedditAccount" WHERE id=%s AND google_id=%s',
+                                   (reddit_id, row.google_id))
+                    db.commit()
+                else:
+                    raise
 
         send_notification = len(posts) + len(pms) == 1 or not row.group_posts
         bundle_id = uuid1().hex
 
-        for post_id, post in posts.iteritems():
-            add_post_to_timeline(google_credentials, post, bundle_id, send_notification)
-            cursor.execute('INSERT INTO "SentPost" (google_id, post_id) VALUES (%s,%s)', (row.google_id, post_id))
-            db.commit()
+        try:
+            for post_id, post in posts.iteritems():
+                add_post_to_timeline(google_credentials, post, bundle_id, send_notification)
+                cursor.execute('INSERT INTO "SentPost" (google_id, post_id) VALUES (%s,%s)', (row.google_id, post_id))
+                db.commit()
 
-        for pm_id, pm in pms.iteritems():
-            add_pm_to_timeline(google_credentials, pm, bundle_id, send_notification)
-            cursor.execute('INSERT INTO "SentPrivateMessage" (google_id, pm_id) VALUES (%s,%s)', (row.google_id, pm_id))
-            db.commit()
+            for pm_id, pm in pms.iteritems():
+                add_pm_to_timeline(google_credentials, pm, bundle_id, send_notification)
+                cursor.execute('INSERT INTO "SentPrivateMessage" (google_id, pm_id) VALUES (%s,%s)',
+                               (row.google_id, pm_id))
+                db.commit()
 
-        if row.group_posts and len(posts) + len(pms) > 1:
-            send_bundle_cover(google_credentials, bundle_id, len(posts), len(pms), row.send_pm)
+            if row.group_posts and len(posts) + len(pms) > 1:
+                send_bundle_cover(google_credentials, bundle_id, len(posts), len(pms), row.send_pm)
+        except AccessTokenRefreshError:
+            logger.warn(
+                'Failed to refresh token for Google user {0:s}. Removing...'
+                .format(row.google_name))
+            cursor.execute('DELETE FROM "GoogleAccount" WHERE id=%s', (row.google_id,))
+            db.commit()
+            continue
 
         logger.info('Sent {0:d} posts and {1:d} PMs'.format(len(posts), len(pms)))
 
