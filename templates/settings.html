@@ -8,6 +8,9 @@
 </div>
 <form action="/manage_reddit_account" method="post">
     <h3>Linked Accounts</h3>
+    {% if accounts | length == 0 %}
+        <div class="alert alert-danger"><strong>No reddit accounts configured.</strong> Add an account to receive updates for it.</div>
+    {% else %}
     {% if not account_error_message is none %}
         <div class="alert alert-warning"><strong>{{ account_error_message }}</strong></div>
     {% endif %}
@@ -19,6 +22,7 @@
         </tr>
         {% endfor %}
     </table>
+    {% endif %}
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
     <button value="add" name="action" type="submit" class="btn btn-primary">Add Account</button>
 </form>

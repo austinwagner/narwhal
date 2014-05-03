@@ -83,7 +83,7 @@ class AccountSettings(db.Model):
     send_nsfw = db.Column(db.Boolean, default=False)
     send_pm = db.Column(db.Boolean, default=True)
     nsfw_overrides = db.Column(db.String(500), default='')
-    post_limit = db.Column(db.Integer, default=10)
+    post_limit = db.Column(db.Integer, default=15)
     group_posts = db.Column(db.Boolean, default=True)
 
     def __init__(self, google_id):
@@ -262,10 +262,6 @@ def settings():
         return redirect(url_for('authenticate'))
 
     account = GoogleAccount.query.filter_by(id=session['user_id']).first()
-
-    if len(account.reddit_accounts) == 0:
-        logger.info('Host: {0:s} - Redirect to authenticate'.format(request.host))
-        return redirect(url_for('authenticate'))
 
     print(type(account.settings.nsfw_overrides))
     print(account.settings.nsfw_overrides)
