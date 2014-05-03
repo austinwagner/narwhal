@@ -34,7 +34,13 @@ import random
 import string
 from reddit import RedditRateLimiter
 import logging
+import logging.config
+import os.path
 from datetime import datetime
+
+logging_conf = 'logging.conf'
+if os.path.exists(logging_conf):
+    logging.config.fileConfig(logging_conf, disable_existing_loggers=False)
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +147,7 @@ def authenticate():
     state = generate_csrf_token()
     session['state'] = state
     google_auth_url = google_flow.step1_get_authorize_url() + '&state=' + state
-    logger.info('Host: {0:s} - Google authorization redirect to {1:s}'.format(request.host, google_auth_url))
+    logger.info('Host: {0:s} - Google authorization redirect to {1:s}'.format(request.remote_addr, google_auth_url))
     return redirect(google_auth_url)
 
 
@@ -149,7 +155,7 @@ def authenticate():
 def google_authorize_callback():
     if request.args['state'] != session['state']:
         logger.warn('Host: {0:s} - Google authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
-                    .format(request.host, request.args['state'], session['state']))
+                    .format(request.remote_addr, request.args['state'], session['state']))
         abort(401)
 
     credentials = google_flow.step2_exchange(request.args)
@@ -157,14 +163,14 @@ def google_authorize_callback():
     email = credentials.id_token['email']
 
     if GoogleAccount.query.filter_by(id=user_id).count() == 0:
-        logger.debug('Host: {0:s} - Saving Google authorization for user {1:s}'.format(request.host, email))
+        logger.debug('Host: {0:s} - Saving Google authorization for user {1:s}'.format(request.remote_addr, email))
         account = GoogleAccount(user_id, credentials, email)
         account_settings = AccountSettings(user_id)
         db.session.add(account)
         db.session.add(account_settings)
         db.session.commit()
     else:
-        logger.debug('Host: {0:s} - Found Google authorization for user {1:s}'.format(request.host, email))
+        logger.debug('Host: {0:s} - Found Google authorization for user {1:s}'.format(request.remote_addr, email))
 
     session['user_id'] = user_id
 
@@ -172,10 +178,10 @@ def google_authorize_callback():
         state = generate_csrf_token()
         session['state'] = state
         reddit_auth_url = reddit_flow.step1_get_authorize_url() + '&state=' + state + '&duration=permanent'
-        logger.info('Host: {0:s} - Reddit authorization redirect to {1:s}'.format(request.host, reddit_auth_url))
+        logger.info('Host: {0:s} - Reddit authorization redirect to {1:s}'.format(request.remote_addr, reddit_auth_url))
         return redirect(reddit_auth_url)
 
-    logger.info('Host: {0:s} - Redirect to /settings'.format(request.host))
+    logger.info('Host: {0:s} - Redirect to /settings'.format(request.remote_addr))
     return redirect(url_for('settings'))
 
 
@@ -183,7 +189,7 @@ def google_authorize_callback():
 def reddit_authorize_callback():
     if request.args['state'] != session['state']:
         logger.warn('Host: {0:s} - Reddit authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
-                    .format(request.host, request.args['state'], session['state']))
+                    .format(request.remote_addr, request.args['state'], session['state']))
         return abort(401)
 
     if request.args.get('error') == 'access_denied':
@@ -206,19 +212,19 @@ def reddit_authorize_callback():
 def manage_reddit_account():
     if request.form['csrf_token'] != session['csrf_token']:
         logger.warn('Host: {0:s} - Settings page csrf mismatch. Got "{1:s}", expected "{2:s}"'
-                    .format(request.host, request.form['csrf_token'], session['csrf_token']))
+                    .format(request.remote_addr, request.form['csrf_token'], session['csrf_token']))
         return abort(401)
 
     if request.form['action'] == 'add':
-        logger.info('Host: {0:s} - Adding Reddit account'.format(request.host))
+        logger.info('Host: {0:s} - Adding Reddit account'.format(request.remote_addr))
         state = generate_csrf_token()
         session['state'] = state
         reddit_auth_url = reddit_flow.step1_get_authorize_url() + '&state=' + state + '&duration=permanent'
-        logger.info('Host: {0:s} - Reddit authorization redirect to {1:s}'.format(request.host, reddit_auth_url))
+        logger.info('Host: {0:s} - Reddit authorization redirect to {1:s}'.format(request.remote_addr, reddit_auth_url))
         return redirect(reddit_auth_url)
     else:
         reddit_id = request.form['action'].split('_', 1)[1]
-        logger.info('Host: {0:s} - Removing Reddit account {1:s}'.format(request.host, reddit_id))
+        logger.info('Host: {0:s} - Removing Reddit account {1:s}'.format(request.remote_addr, reddit_id))
         RedditAccount.query.filter_by(id=reddit_id).delete()
         db.session.commit()
         return redirect(url_for('settings'))
@@ -228,10 +234,10 @@ def manage_reddit_account():
 def settings():
     error_message = None
     if request.method == 'POST':
-        logger.debug('Host: {0:s} - Settings POSTed. Data: {1:s}'.format(request.host, str(request.form)))
+        logger.debug('Host: {0:s} - Settings POSTed. Data: {1:s}'.format(request.remote_addr, str(request.form)))
         if request.form['csrf_token'] != session['csrf_token']:
             logger.warn('Host: {0:s} - Settings page csrf mismatch. Got "{1:s}", expected "{2:s}"'
-                        .format(request.host, request.form['csrf_token'], session['csrf_token']))
+                        .format(request.remote_addr, request.form['csrf_token'], session['csrf_token']))
             abort(401)
 
         try:
@@ -257,7 +263,7 @@ def settings():
             error_message = str(e)
 
     if 'user_id' not in session:
-        logger.info('Host: {0:s} - Redirect to authenticate'.format(request.host))
+        logger.info('Host: {0:s} - Redirect to authenticate'.format(request.remote_addr))
         return redirect(url_for('authenticate'))
 
     account = GoogleAccount.query.filter_by(id=session['user_id']).first()
