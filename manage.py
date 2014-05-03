@@ -5,7 +5,7 @@
 # modification, are permitted provided that the following conditions are met:
 #
 # 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
+# list of conditions and the following disclaimer.
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
@@ -26,10 +26,9 @@
 # either expressed or implied, of the FreeBSD Project.
 
 from flask_script import Manager
-import cPickle
 from oauth2client.client import AccessTokenRefreshError
 from reddit import RedditRateLimiter
-from narwhal import app, get_db
+from narwhal import app, db, GoogleAccount, SentPost, SentPrivateMessage, ImageUrlCache
 from httplib2 import Http
 from apiclient import discovery
 import re
@@ -49,92 +48,76 @@ imgur_album_regex = re.compile('<meta name="twitter:image0:src" content="(?P<url
 
 
 @manager.command
+def init_db():
+    db.create_all()
+
+
+@manager.command
 def send_updates():
     reddit = RedditRateLimiter()
-
-    db = get_db()
-    account_cursor = db.cursor()
-    cursor = db.cursor()
-
-    account_cursor.execute(
-        'SELECT t1.*, s.send_nsfw, s.send_pm, s.nsfw_overrides, s.post_limit, s.group_posts FROM '
-        '(SELECT g.id AS google_id, g.credentials AS google_credentials, '
-        'array_agg(r.credentials) AS reddit_credentials, array_agg(r.id) AS reddit_ids, '
-        'array_agg(r.name) AS reddit_names, g.name AS google_name '
-        'FROM "GoogleAccount" g INNER JOIN "RedditAccount" r ON g.id = r.google_id '
-        'GROUP BY g.id, g.credentials '
-        'HAVING COUNT(r.id) > 0) t1 '
-        'INNER JOIN "AccountSettings" s ON t1.google_id = s.google_id')
-
-    for row in account_cursor:
-        logger.info('Sending new posts for Google user {0:s}'.format(row.google_name))
-        google_credentials = cPickle.loads(str(row.google_credentials))
+    for account in GoogleAccount.query.all():
+        logger.info('Sending new posts for Google user {0:s}'.format(account.email))
 
         posts = {}
         pms = {}
-        for i in xrange(len(row.reddit_credentials)):
-            pickled_reddit_credentials = row.reddit_credentials[i]
-            reddit_id = row.reddit_ids[i]
-            reddit_name = row.reddit_names[i]
-            logger.info('Getting new posts for reddit user {0:s}'.format(reddit_name))
+        for reddit_account in account.reddit_accounts:
+            logger.info('Getting new posts for reddit user {0:s}'.format(reddit_account.name))
 
             try:
-                reddit_credentials = cPickle.loads(str(pickled_reddit_credentials))
-                frontpage = reddit.get(reddit_credentials, '/hot.json?limit=' + str(row.post_limit))['data']['children']
+                frontpage = reddit.get(reddit_account.credentials, '/hot.json?limit=' +
+                                       str(account.settings.post_limit))['data']['children']
 
                 for post in (p['data'] for p in frontpage):
-                    if should_send_post(post, row.send_nsfw, row.nsfw_overrides):
+                    if should_send_post(post, account.settings.send_nsfw,
+                                        account.settings.nsfw_overrides):
                         posts[post['id']] = post
 
-                cursor.execute('SELECT post_id FROM "SentPost" '
-                               'WHERE post_id=ANY(%s) AND google_id=%s', (posts.keys(), row.google_id))
-                for post_id in (r.post_id for r in cursor):
+                ids = account.sent_posts.filter(SentPost.post_id.in_(posts.keys())).all() if len(posts) > 0 else []
+                for post_id in (r.post_id for r in ids):
                     del posts[post_id]
 
-                if row.send_pm:
-                    inbox = reddit.get(reddit_credentials, '/message/inbox.json')['data']['children']
+                if account.settings.send_pm:
+                    inbox = reddit.get(reddit_account.credentials, '/message/inbox.json')['data']['children']
                     for pm in (p['data'] for p in inbox):
                         if pm.get('new', False) and pm.get('name', '').split('_', 1)[0] == 't4':
                             pms[pm['id']] = pm
 
-                    cursor.execute('SELECT pm_id FROM "SentPrivateMessage" '
-                                   'WHERE pm_id=ANY(%s) AND google_id=%s', (pms.keys(), row.google_id))
-                    for pm_id in (r.pm_id for r in cursor):
+                    ids = account.sent_pms.filter(SentPrivateMessage.pm_id.in_(pms.keys())).all() \
+                        if len(pms) > 0 else []
+                    for pm_id in (r.pm_id for r in ids):
                         del pms[pm_id]
             except KeyError as e:
                 if e.args[0] == 'access_token':
                     logger.warn(
                         'Failed to refresh a reddit token for reddit account {0:s} of Google user {1:s}. Removing...'
-                        .format(reddit_name, row.google_name))
-                    cursor.execute('DELETE FROM "RedditAccount" WHERE id=%s AND google_id=%s',
-                                   (reddit_id, row.google_id))
-                    db.commit()
+                        .format(reddit_account.name, account.email))
+                    db.session.delete(reddit_account)
+                    db.session.commit()
                 else:
                     raise
 
-        send_notification = len(posts) + len(pms) == 1 or not row.group_posts
+        send_notification = len(posts) + len(pms) == 1 or not account.settings.group_posts
         bundle_id = uuid1().hex
 
         try:
             for post_id, post in posts.iteritems():
-                add_post_to_timeline(google_credentials, post, bundle_id, send_notification)
-                cursor.execute('INSERT INTO "SentPost" (google_id, post_id) VALUES (%s,%s)', (row.google_id, post_id))
-                db.commit()
+                add_post_to_timeline(account.credentials, post, bundle_id, send_notification)
+                db.session.add(SentPost(account.id, post_id))
+                db.session.commit()
 
             for pm_id, pm in pms.iteritems():
-                add_pm_to_timeline(google_credentials, pm, bundle_id, send_notification)
-                cursor.execute('INSERT INTO "SentPrivateMessage" (google_id, pm_id) VALUES (%s,%s)',
-                               (row.google_id, pm_id))
-                db.commit()
+                add_pm_to_timeline(account.credentials, pm, bundle_id, send_notification)
+                db.session.add(SentPrivateMessage(account.id, pm_id))
+                db.session.commit()
 
-            if row.group_posts and len(posts) + len(pms) > 1:
-                send_bundle_cover(google_credentials, bundle_id, len(posts), len(pms), row.send_pm)
+            if account.settings.group_posts and len(posts) + len(pms) > 1:
+                send_bundle_cover(account.credentials, bundle_id, len(posts), len(pms), account.settings.send_pm)
         except AccessTokenRefreshError:
             logger.warn(
                 'Failed to refresh token for Google user {0:s}. Removing...'
-                .format(row.google_name))
-            cursor.execute('DELETE FROM "GoogleAccount" WHERE id=%s', (row.google_id,))
-            db.commit()
+                .format(account.email))
+            db.session.delete(account)
+            db.session.commit()
             continue
 
         logger.info('Sent {0:d} posts and {1:d} PMs'.format(len(posts), len(pms)))
@@ -181,25 +164,23 @@ def generate_post_html(post, subreddit):
     url = None if post['is_self'] else get_image_url(post)
 
     if url is None:
-        html = '<article>'
+        html = u'<article>'
     else:
-        html = ('<article class="photo"><img src="' + url + '" style="width: 100%"/>'
-                '<div class="overlay-gradient-tall-dark"/>')
+        html = (u'<article class="photo"><img src="{0:s}" style="width: 100%"/>'
+                u'<div class="overlay-gradient-tall-dark"/>'.format(url))
 
-    html += ('<section><p class="text-auto-size">' + post['title'] + '</p></section>'
-             '<footer>/r/' + subreddit + '</footer></article>')
+    html += (
+        u'<section><p class="text-auto-size">{0:s}</p></section>'
+        u'<footer>/r/{1:s}</footer></article>'.format(post['title'], subreddit))
 
     return html
 
 
 def get_image_url(post):
-    db = get_db()
-    cur = db.cursor()
-    cur.execute('SELECT url FROM "ImageUrlCache" WHERE post_id=%s', (post['id'],))
-    url = cur.fetchone()
+    url = ImageUrlCache.query.filter_by(post_id=post['id']).first()
     if url is not None:
         logger.debug('Cache hit for {0:s}'.format(post['id']))
-        return url[0]
+        return url
 
     logger.debug('Cache miss for {0:s}'.format(post['id']))
     imgur_match = imgur_regex.search(post['url'])
@@ -215,8 +196,8 @@ def get_image_url(post):
     else:
         url = None
 
-    cur.execute('INSERT INTO "ImageUrlCache" (post_id, url) VALUES (%s,%s)', (post['id'], url))
-    db.commit()
+    db.session.add(ImageUrlCache(post['id'], url))
+    db.session.commit()
     return url
 
 
@@ -263,13 +244,16 @@ def add_pm_to_timeline(credentials, pm, bundle_id, send_notification):
 
 
 def generate_pm_html(pm):
-    return ('<article class="author">'
-            '<div class="overlay-full"/>'
-            '<header>'
-            '<img src="http://i.imgur.com/MSuFUq6.png"/>'
-            '<h1>' + pm['author'] + '</h1>'
-            '<h2>' + pm['subject'] + '</h2>'
-            '</header><section><p class="text-auto-size">' + pm['body'] + '</p></section></article>')
+    return (
+        u'<article class="author">'
+        u'<div class="overlay-full"/>'
+        u'<header>'
+        u'<img src="http://i.imgur.com/MSuFUq6.png"/>'
+        u'<h1>{0:s}</h1>'
+        u'<h2>{1:s}</h2>'
+        u'</header><section><p class="text-auto-size">{2:s}</p></section></article>'.format(
+            pm['author'], pm['subject'], pm['body']
+        ))
 
 
 def send_bundle_cover(credentials, bundle_id, post_count, pm_count, send_pm):
@@ -289,13 +273,18 @@ def send_bundle_cover(credentials, bundle_id, post_count, pm_count, send_pm):
 
 
 def generate_cover_html(post_count, pm_count, send_pm):
-    return ('<article style="left: 0px; visibility: visible;">'
-            '<section><div class="layout-figure"><div class="align-center">'
-            '<img src="' + app.config['BUNDLE_COVER_LOGO_URL'] + '" width="190" height="190">'
-            '</div><div><div class="text-large">'
-            '<p class="green">' + pluralize_new('Post', post_count) + '</p>'
-            '<p class="red">' + pluralize_new('PM', pm_count) if send_pm else '' + '</p>'
-            '</div></div></div></section></article>')
+    return (
+        u'<article style="left: 0px; visibility: visible;">'
+        u'<section><div class="layout-figure"><div class="align-center">'
+        u'<img src="{0:s}" width="190" height="190">'
+        u'</div><div><div class="text-large">'
+        u'<p class="green">{1:s}</p>'
+        u'<p class="red">{2:s}</p>'
+        u'</div></div></div></section></article>'.format(
+            app.config['BUNDLE_COVER_LOGO_URL'],
+            pluralize_new('Post', post_count),
+            pluralize_new('PM', pm_count) if send_pm else ''
+        ))
 
 
 def pluralize_new(item_type, amount):
@@ -305,7 +294,7 @@ def pluralize_new(item_type, amount):
 
 
 def should_send_post(post, send_nsfw, nsfw_overrides):
-    nsfw_overrides = [x.lower() for x in nsfw_overrides]
+    nsfw_overrides = [x.lower() for x in nsfw_overrides.split()]
     return not ((not send_nsfw and post['over_18'] and post['subreddit'].lower() not in nsfw_overrides)
                 or post['stickied'])
 

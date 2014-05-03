@@ -25,23 +25,101 @@
 # of the authors and should not be interpreted as representing official policies,
 # either expressed or implied, of the FreeBSD Project.
 
-from flask import Flask, redirect, request, session, render_template, g, url_for, abort
+from flask import Flask, redirect, request, session, render_template, url_for, abort
+from flask_sqlalchemy import SQLAlchemy
 from oauth2client.client import OAuth2WebServerFlow
-from psycopg2._psycopg import IntegrityError
+from sqlalchemy.exc import IntegrityError
 from OAuth2RedditFlow import OAuth2RedditFlow
 import random
 import string
-import psycopg2
-import cPickle
 from reddit import RedditRateLimiter
 import logging
-import psycopg2.extras
-from psycopg2 import errorcodes
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config.from_pyfile('config.py')
+db = SQLAlchemy(app)
+
+
+class GoogleAccount(db.Model):
+    __tablename__ = 'GoogleAccount'
+    id = db.Column(db.String(80), primary_key=True)
+    credentials = db.Column(db.PickleType)
+    email = db.Column(db.String(256))
+    reddit_accounts = db.relationship('RedditAccount', backref='google_account',
+                                      cascade="all, delete, delete-orphan")
+    settings = db.relationship('AccountSettings', uselist=False,
+                               cascade="all, delete, delete-orphan")
+    sent_posts = db.relationship('SentPost', lazy='dynamic',
+                                 cascade="all, delete, delete-orphan")
+    sent_pms = db.relationship('SentPrivateMessage', lazy='dynamic',
+                               cascade="all, delete, delete-orphan")
+
+    def __init__(self, google_id, credentials, email):
+        self.id = google_id
+        self.credentials = credentials
+        self.email = email
+
+
+class RedditAccount(db.Model):
+    __tablename__ = 'RedditAccount'
+    id = db.Column(db.String(80), primary_key=True)
+    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    name = db.Column(db.String(256))
+    credentials = db.Column(db.PickleType)
+
+    def __init__(self, reddit_id, google_id, credentials, name):
+        self.id = reddit_id
+        self.google_id = google_id
+        self.credentials = credentials
+        self.name = name
+
+
+class AccountSettings(db.Model):
+    __tablename__ = 'AccountSettings'
+    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    send_nsfw = db.Column(db.Boolean, default=False)
+    send_pm = db.Column(db.Boolean, default=True)
+    nsfw_overrides = db.Column(db.String(500), default='')
+    post_limit = db.Column(db.Integer, default=10)
+    group_posts = db.Column(db.Boolean, default=True)
+
+    def __init__(self, google_id):
+        self.google_id = google_id
+
+
+class SentPost(db.Model):
+    __tablename__ = 'SentPost'
+    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    post_id = db.Column(db.String(20), primary_key=True)
+
+    def __init__(self, google_id, post_id):
+        self.google_id = google_id
+        self.post_id = post_id
+
+
+class SentPrivateMessage(db.Model):
+    __tablename__ = 'SentPrivateMessage'
+    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    pm_id = db.Column(db.String(20), primary_key=True)
+
+    def __init__(self, google_id, pm_id):
+        self.google_id = google_id
+        self.pm_id = pm_id
+
+
+class ImageUrlCache(db.Model):
+    __tablename__ = 'ImageUrlCache'
+    post_id = db.Column(db.String(20), primary_key=True)
+    url = db.Column(db.String(512))
+    cached_at = db.Column(db.DateTime(True), default=datetime.now)
+
+    def __init__(self, post_id, url):
+        self.post_id = post_id
+        self.url = url
+
 
 reddit_flow = OAuth2RedditFlow(client_id=app.config['REDDIT_CLIENT_ID'],
                                client_secret=app.config['REDDIT_CLIENT_SECRET'],
@@ -56,28 +134,6 @@ google_flow = OAuth2WebServerFlow(client_id=app.config['GOOGLE_CLIENT_ID'],
                                          'email'],
                                   user_agent=app.config['USER_AGENT'])
 reddit = RedditRateLimiter()
-
-
-def connect_db():
-    return psycopg2.connect(
-        host=app.config['DATABASE_HOST'],
-        database=app.config['DATABASE_DATABASE'],
-        user=app.config['DATABASE_USER'],
-        password=app.config['DATABASE_PASSWORD'],
-        cursor_factory=psycopg2.extras.NamedTupleCursor)
-
-
-def get_db():
-    if not hasattr(g, 'pgdb'):
-        g.pgdb = connect_db()
-
-    return g.pgdb
-
-
-@app.teardown_appcontext
-def close_db(_):
-    if hasattr(g, 'pgdb'):
-        g.pgdb.close()
 
 
 @app.route('/')
@@ -98,23 +154,21 @@ def google_authorize_callback():
 
     credentials = google_flow.step2_exchange(request.args)
     user_id = credentials.id_token['id']
-    name = credentials.id_token['email']
-    db = get_db()
-    cur = db.cursor()
-    cur.execute('SELECT COUNT(1) FROM "GoogleAccount" WHERE id=%s', (user_id,))
-    if cur.fetchone()[0] == 0:
-        logger.debug('Host: {0:s} - Saving Google authorization for user {1:s}'.format(request.host, name))
-        cur.execute('INSERT INTO "GoogleAccount" (id, credentials, "name") VALUES (%s,%s,%s)',
-                    (user_id, psycopg2.Binary(cPickle.dumps(credentials, -1)), name))
-        cur.execute('INSERT INTO "AccountSettings" (google_id) VALUES (%s)', (user_id,))
-        db.commit()
+    email = credentials.id_token['email']
+
+    if GoogleAccount.query.filter_by(id=user_id).count() == 0:
+        logger.debug('Host: {0:s} - Saving Google authorization for user {1:s}'.format(request.host, email))
+        account = GoogleAccount(user_id, credentials, email)
+        account_settings = AccountSettings(user_id)
+        db.session.add(account)
+        db.session.add(account_settings)
+        db.session.commit()
     else:
-        logger.debug('Host: {0:s} - Found Google authorization for user {1:s}'.format(request.host, name))
+        logger.debug('Host: {0:s} - Found Google authorization for user {1:s}'.format(request.host, email))
 
     session['user_id'] = user_id
 
-    cur.execute('SELECT COUNT(1) FROM "RedditAccount" WHERE google_id=%s', (user_id,))
-    if cur.fetchone()[0] == 0:
+    if RedditAccount.query.filter_by(google_id=user_id).count() == 0:
         state = generate_csrf_token()
         session['state'] = state
         reddit_auth_url = reddit_flow.step1_get_authorize_url() + '&state=' + state + '&duration=permanent'
@@ -139,18 +193,11 @@ def reddit_authorize_callback():
     user = reddit.get(credentials, '/api/v1/me')
 
     try:
-        db = get_db()
-        cur = db.cursor()
-        cur.execute(
-            'INSERT INTO "RedditAccount" (id, "name", google_id, credentials) VALUES (%s,%s,%s,%s)',
-            (user['id'], user['name'], session['user_id'],
-             psycopg2.Binary(cPickle.dumps(credentials, -1))))
-        db.commit()
-    except IntegrityError as e:
-        if e.pgcode[:2] == errorcodes.CLASS_INTEGRITY_CONSTRAINT_VIOLATION:
-            return redirect(url_for('settings') + '?account_error_message=Account already linked.')
-
-        raise
+        reddit_account = RedditAccount(user['id'], session['user_id'], credentials, user['name'])
+        db.session.add(reddit_account)
+        db.session.commit()
+    except IntegrityError:
+        return redirect(url_for('settings') + '?account_error_message=Account already linked.')
 
     return redirect(url_for('settings'))
 
@@ -172,10 +219,8 @@ def manage_reddit_account():
     else:
         reddit_id = request.form['action'].split('_', 1)[1]
         logger.info('Host: {0:s} - Removing Reddit account {1:s}'.format(request.host, reddit_id))
-        db = get_db()
-        cur = db.cursor()
-        cur.execute('DELETE FROM "RedditAccount" WHERE id=%s', (reddit_id,))
-        db.commit()
+        RedditAccount.query.filter_by(id=reddit_id).delete()
+        db.session.commit()
         return redirect(url_for('settings'))
 
 
@@ -199,40 +244,38 @@ def settings():
             if post_limit < 1 or post_limit > 25:
                 raise ValueError('Post limit must be between 1 and 25.')
 
-            if len(request.form.get('nsfw_overrides', '') > 500):
+            if len(request.form.get('nsfw_overrides', '')) > 500:
                 raise ValueError('NSFW Overrides is limited to 500 characters.')
 
-            db = get_db()
-            cur = db.cursor()
-            cur.execute('UPDATE "AccountSettings" '
-                        'SET (send_nsfw, send_pm, nsfw_overrides, post_limit, group_posts) = '
-                        '(%s,%s,%s,%s,%s) WHERE google_id=%s',
-                        (request.form.get('send_nsfw') is not None, request.form.get('send_pm') is not None,
-                         request.form.get('nsfw_overrides', '').split(), post_limit,
-                         request.form.get('group_posts') is not None, session['user_id']))
-            db.commit()
+            account_settings = AccountSettings.query.filter_by(google_id=session['user_id']).first()
+            account_settings.send_nsfw = request.form.get('send_nsfw') is not None
+            account_settings.nsfw_overrides = request.form.get('nsfw_overrides', '')
+            account_settings.send_pm = request.form.get('send_pm') is not None
+            account_settings.group_posts = request.form.get('group_posts') is not None
+            account_settings.post_limit = post_limit
+            db.session.commit()
         except ValueError as e:
             error_message = str(e)
 
     if 'user_id' not in session:
         logger.info('Host: {0:s} - Redirect to authenticate'.format(request.host))
         return redirect(url_for('authenticate'))
-    db = get_db()
-    cur = db.cursor()
-    cur.execute('SELECT "name", id FROM "RedditAccount" WHERE google_id=%s', (session['user_id'],))
-    accounts = cur.fetchall()
-    if len(accounts) == 0:
+
+    account = GoogleAccount.query.filter_by(id=session['user_id']).first()
+
+    if len(account.reddit_accounts) == 0:
         logger.info('Host: {0:s} - Redirect to authenticate'.format(request.host))
         return redirect(url_for('authenticate'))
 
-    cur.execute('SELECT send_nsfw, send_pm, nsfw_overrides, post_limit, group_posts '
-                'FROM "AccountSettings" WHERE google_id=%s', (session['user_id'],))
-    acct_settings = cur.fetchone()
-
+    print(type(account.settings.nsfw_overrides))
+    print(account.settings.nsfw_overrides)
     session['csrf_token'] = generate_csrf_token()
-    return render_template('settings.html', accounts=accounts, send_nsfw=acct_settings.send_nsfw,
-                           send_pm=acct_settings.send_pm, nsfw_overrides=acct_settings.nsfw_overrides,
-                           post_limit=acct_settings.post_limit, group_posts=acct_settings.group_posts,
+    return render_template('settings.html', accounts=account.reddit_accounts,
+                           send_nsfw=account.settings.send_nsfw,
+                           send_pm=account.settings.send_pm,
+                           nsfw_overrides=account.settings.nsfw_overrides,
+                           post_limit=account.settings.post_limit,
+                           group_posts=account.settings.group_posts,
                            csrf_token=session['csrf_token'], error_message=error_message,
                            success_message=error_message is None and request.method == 'POST',
                            account_error_message=request.args.get('account_error_message'))
