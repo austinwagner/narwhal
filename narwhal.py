@@ -227,7 +227,6 @@ def manage_reddit_account():
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
     error_message = None
-    print(request.method)
     if request.method == 'POST':
         logger.debug('Host: {0:s} - Settings POSTed. Data: {1:s}'.format(request.host, str(request.form)))
         if request.form['csrf_token'] != session['csrf_token']:
@@ -263,8 +262,6 @@ def settings():
 
     account = GoogleAccount.query.filter_by(id=session['user_id']).first()
 
-    print(type(account.settings.nsfw_overrides))
-    print(account.settings.nsfw_overrides)
     session['csrf_token'] = generate_csrf_token()
     return render_template('settings.html', accounts=account.reddit_accounts,
                            send_nsfw=account.settings.send_nsfw,
