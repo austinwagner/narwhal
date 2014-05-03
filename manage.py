@@ -33,8 +33,9 @@ from httplib2 import Http
 from apiclient import discovery
 import re
 import logging
+import logging.config
+import os.path
 from uuid import uuid1
-
 
 logger = logging.getLogger(__name__)
 manager = Manager(app)
@@ -300,5 +301,9 @@ def should_send_post(post, send_nsfw, nsfw_overrides):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    update_logging_conf = 'update_logging.conf'
+    if os.path.exists(update_logging_conf):
+        logging.config.fileConfig(update_logging_conf, disable_existing_loggers=False)
+    else:
+        logging.basicConfig(level=logging.DEBUG)
     manager.run()
