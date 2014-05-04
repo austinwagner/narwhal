@@ -38,7 +38,7 @@ import logging.config
 import os.path
 from datetime import datetime
 
-logging_conf = 'logging.conf'
+logging_conf = '/etc/narwhal/logging.conf'
 if os.path.exists(logging_conf):
     logging.config.fileConfig(logging_conf, disable_existing_loggers=False)
 
