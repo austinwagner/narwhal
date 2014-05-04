@@ -134,14 +134,18 @@ class ImageUrlCache(db.Model):
         self.url = url
 
 
+def create_oauth_redirect_uri(location):
+    return ('https://' if app.config['HTTPS'] else 'http://') + app.config['HOST_ADDRESS'] + '/' + location
+
+
 reddit_flow = OAuth2RedditFlow(client_id=app.config['REDDIT_CLIENT_ID'],
                                client_secret=app.config['REDDIT_CLIENT_SECRET'],
-                               redirect_uri='http://' + app.config['HOST_ADDRESS'] + '/reddit_authorize_callback',
+                               redirect_uri=create_oauth_redirect_uri('reddit_authorize_callback'),
                                scope=['identity', 'privatemessages', 'read'],
                                user_agent=app.config['USER_AGENT'])
 google_flow = OAuth2WebServerFlow(client_id=app.config['GOOGLE_CLIENT_ID'],
                                   client_secret=app.config['GOOGLE_CLIENT_SECRET'],
-                                  redirect_uri='http://' + app.config['HOST_ADDRESS'] + '/google_authorize_callback',
+                                  redirect_uri=create_oauth_redirect_uri('google_authorize_callback'),
                                   scope=['profile',
                                          'https://www.googleapis.com/auth/glass.timeline',
                                          'email'],
