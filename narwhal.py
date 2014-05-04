@@ -39,6 +39,7 @@ import os.path
 from datetime import datetime
 from flaskext.kvsession import KVSessionExtension
 from simplekv.db.sql import SQLAlchemyStore
+import pytz
 
 
 logging_conf = '/etc/narwhal/logging.conf'
@@ -127,11 +128,12 @@ class ImageUrlCache(db.Model):
     __tablename__ = 'ImageUrlCache'
     post_id = db.Column(db.String(20), primary_key=True)
     url = db.Column(db.String(512))
-    cached_at = db.Column(db.DateTime(True), default=datetime.now)
+    cached_at = db.Column(db.DateTime(True))
 
     def __init__(self, post_id, url):
         self.post_id = post_id
         self.url = url
+        self.cached_at = datetime.now(pytz.utc)
 
 
 def create_oauth_redirect_uri(location):

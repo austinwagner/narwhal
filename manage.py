@@ -36,6 +36,7 @@ import logging
 import logging.config
 from uuid import uuid1
 from datetime import datetime
+import pytz
 
 logger = logging.getLogger(__name__)
 manager = Manager(app)
@@ -99,7 +100,7 @@ def send_updates(logging_config=None):
             except KeyError as e:
                 if e.args[0] == 'access_token':
                     if reddit_account.failed_at is None:
-                        reddit_account.failed_at = datetime.now
+                        reddit_account.failed_at = datetime.now(pytz.utc)
                         db.session.commit()
                     logger.warn(
                         'Failed to refresh a reddit token for reddit account {0:s} of Google user {1:s}. '
@@ -130,7 +131,7 @@ def send_updates(logging_config=None):
                 db.session.commit()
         except AccessTokenRefreshError:
             if account.failed_at is None:
-                account.failed_at = datetime.now
+                account.failed_at = datetime.now(pytz.utc)
                 db.session.commit()
             logger.warn(
                 'Failed to refresh token for Google user {0:s}. First failure at: {1:s}'
