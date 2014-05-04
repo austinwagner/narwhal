@@ -36,6 +36,7 @@ import logging
 import logging.config
 import os.path
 from uuid import uuid1
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 manager = Manager(app)
@@ -87,13 +88,19 @@ def send_updates():
                         if len(pms) > 0 else []
                     for pm_id in (r.pm_id for r in ids):
                         del pms[pm_id]
+
+                    if reddit_account.failed_at is not None:
+                        reddit_account.failed_at = None
+                        db.session.commit()
             except KeyError as e:
                 if e.args[0] == 'access_token':
+                    if reddit_account.failed_at is None:
+                        reddit_account.failed_at = datetime.now
+                        db.session.commit()
                     logger.warn(
-                        'Failed to refresh a reddit token for reddit account {0:s} of Google user {1:s}. Removing...'
-                        .format(reddit_account.name, account.email))
-                    db.session.delete(reddit_account)
-                    db.session.commit()
+                        'Failed to refresh a reddit token for reddit account {0:s} of Google user {1:s}. '
+                        'First failure at: {2:s}'
+                        .format(reddit_account.name, account.email, reddit_account.failed_at.isoformat()))
                 else:
                     raise
 
@@ -113,12 +120,17 @@ def send_updates():
 
             if account.settings.group_posts and len(posts) + len(pms) > 1:
                 send_bundle_cover(account.credentials, bundle_id, len(posts), len(pms), account.settings.send_pm)
+
+            if account.failed_at is not None:
+                account.failed_at = None
+                db.session.commit()
         except AccessTokenRefreshError:
+            if account.failed_at is None:
+                account.failed_at = datetime.now
+                db.session.commit()
             logger.warn(
-                'Failed to refresh token for Google user {0:s}. Removing...'
-                .format(account.email))
-            db.session.delete(account)
-            db.session.commit()
+                'Failed to refresh token for Google user {0:s}. First failure at: {1:s}'
+                .format(account.email, account.failed_at.isoformat()))
             continue
 
         logger.info('Sent {0:d} posts and {1:d} PMs'.format(len(posts), len(pms)))

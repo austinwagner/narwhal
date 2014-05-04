@@ -62,6 +62,7 @@ class GoogleAccount(db.Model):
                                  cascade="all, delete, delete-orphan")
     sent_pms = db.relationship('SentPrivateMessage', lazy='dynamic',
                                cascade="all, delete, delete-orphan")
+    failed_at = db.Column(db.DateTime(True))
 
     def __init__(self, google_id, credentials, email):
         self.id = google_id
@@ -75,6 +76,7 @@ class RedditAccount(db.Model):
     google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
     name = db.Column(db.String(256))
     credentials = db.Column(db.PickleType)
+    failed_at = db.Column(db.DateTime(True))
 
     def __init__(self, reddit_id, google_id, credentials, name):
         self.id = reddit_id
