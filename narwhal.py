@@ -37,6 +37,9 @@ import logging
 import logging.config
 import os.path
 from datetime import datetime
+from flaskext.kvsession import KVSessionExtension
+from simplekv.db.sql import SQLAlchemyStore
+
 
 logging_conf = '/etc/narwhal/logging.conf'
 if os.path.exists(logging_conf):
@@ -47,6 +50,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config.from_pyfile('config.py')
 db = SQLAlchemy(app)
+kv_store = SQLAlchemyStore(db.engine, db.metadata, 'kvstore')
+KVSessionExtension(kv_store, app)
 
 
 class GoogleAccount(db.Model):
@@ -289,7 +294,8 @@ def settings():
                            group_posts=account.settings.group_posts,
                            csrf_token=session['csrf_token'], error_message=error_message,
                            success_message=error_message is None and request.method == 'POST',
-                           account_error_message=request.args.get('account_error_message'))
+                           account_error_message=request.args.get('account_error_message'),
+                           email=account.email)
 
 
 def generate_csrf_token():
