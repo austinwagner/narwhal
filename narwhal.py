@@ -143,6 +143,17 @@ reddit = RedditRateLimiter()
 
 
 @app.route('/')
+def index():
+    return render_template('welcome.html')
+
+
+@app.route('/logout')
+def logout():
+    del session['user_id']
+    return redirect(url_for('index'))
+
+
+@app.route('/login')
 def authenticate():
     state = generate_csrf_token()
     session['state'] = state
@@ -263,8 +274,7 @@ def settings():
             error_message = str(e)
 
     if 'user_id' not in session:
-        logger.info('{0:s}: Redirect to authenticate'.format(request.remote_addr))
-        return redirect(url_for('authenticate'))
+        return redirect(url_for('index'))
 
     account = GoogleAccount.query.filter_by(id=session['user_id']).first()
 

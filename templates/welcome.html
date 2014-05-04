@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="jumbotron">
+        <div class="row">
+            <div class="col-md-3"><img class="img-responsive" src="{{ url_for('static', filename='images/narwhal-512.png') }}" /></div>
+            <div class="col-md-9">
+                <h1>Narwhal</h1>
+                <p>Welcome to Narwhal. Sign in to start getting reddit updates on your Glass!</p>
+                <p><a class="btn btn-primary btn-lg" role="button" href="{{ url_for('authenticate') }}">Sign in</a></p>
+            </div>
+        </div>
+    </div>
+{% endblock %}
