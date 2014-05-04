@@ -34,7 +34,6 @@ from apiclient import discovery
 import re
 import logging
 import logging.config
-import os.path
 from uuid import uuid1
 from datetime import datetime
 
@@ -55,7 +54,12 @@ def init_db():
 
 
 @manager.command
-def send_updates():
+def send_updates(logging_config=None):
+    if logging_config is None:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.config.fileConfig(logging_config, disable_existing_loggers=False)
+
     reddit = RedditRateLimiter()
     for account in GoogleAccount.query.all():
         logger.info('Sending new posts for Google user {0:s}'.format(account.email))
@@ -313,9 +317,4 @@ def should_send_post(post, send_nsfw, nsfw_overrides):
 
 
 if __name__ == "__main__":
-    update_logging_conf = 'update_logging.conf'
-    if os.path.exists(update_logging_conf):
-        logging.config.fileConfig(update_logging_conf, disable_existing_loggers=False)
-    else:
-        logging.basicConfig(level=logging.DEBUG)
     manager.run()
