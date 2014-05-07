@@ -109,22 +109,28 @@ def send_updates(logging_config=None):
                 else:
                     raise
 
+        if len(posts) + len(pms) == 0:
+            continue
+
         send_notification = len(posts) + len(pms) == 1 or not account.settings.group_posts
         bundle_id = uuid1().hex
 
+        http = account.credentials.authorize(Http())
+        api_client = discovery.build('mirror', 'v1', http=http)
+
         try:
             for post_id, post in posts.iteritems():
-                add_post_to_timeline(account.credentials, post, bundle_id, send_notification)
+                add_post_to_timeline(api_client, post, bundle_id, send_notification)
                 db.session.add(SentPost(account.id, post_id))
                 db.session.commit()
 
             for pm_id, pm in pms.iteritems():
-                add_pm_to_timeline(account.credentials, pm, bundle_id, send_notification)
+                add_pm_to_timeline(api_client, pm, bundle_id, send_notification)
                 db.session.add(SentPrivateMessage(account.id, pm_id))
                 db.session.commit()
 
             if account.settings.group_posts and len(posts) + len(pms) > 1:
-                send_bundle_cover(account.credentials, bundle_id, len(posts), len(pms), account.settings.send_pm)
+                send_bundle_cover(api_client, bundle_id, len(posts), len(pms), account.settings.send_pm)
 
             if account.failed_at is not None:
                 account.failed_at = None
@@ -141,7 +147,7 @@ def send_updates(logging_config=None):
         logger.info('Sent {0:d} posts and {1:d} PMs'.format(len(posts), len(pms)))
 
 
-def add_post_to_timeline(credentials, post, bundle_id, send_notification):
+def add_post_to_timeline(api_client, post, bundle_id, send_notification):
     timeline_item = {
         'text': post['title'],
         'speakableType': 'Reddit post',
@@ -173,9 +179,8 @@ def add_post_to_timeline(credentials, post, bundle_id, send_notification):
         timeline_item['notification'] = {'level': 'DEFAULT'}
 
     logger.debug('Adding post to timeline: {0:s}, bundle: {1:s}'.format(str(timeline_item), bundle_id))
-    http = credentials.authorize(Http())
-    service = discovery.build('mirror', 'v1', http=http)
-    service.timeline().insert(body=timeline_item).execute()
+
+    api_client.timeline().insert(body=timeline_item).execute()
 
 
 def generate_post_html(post, subreddit):
@@ -232,7 +237,7 @@ def get_imgur_cover_url(album_url):
     return match.group('url_no_ext') + 'l.jpg'
 
 
-def add_pm_to_timeline(credentials, pm, bundle_id, send_notification):
+def add_pm_to_timeline(api_client, pm, bundle_id, send_notification):
     timeline_item = {
         'title': pm['subject'],
         'text': pm['body'],
@@ -256,9 +261,7 @@ def add_pm_to_timeline(credentials, pm, bundle_id, send_notification):
         timeline_item['notification'] = {'level': 'DEFAULT'}
 
     logger.debug('Adding PM to timeline: {0:s}, bundle: {1:s}'.format(str(timeline_item), bundle_id))
-    http = credentials.authorize(Http())
-    service = discovery.build('mirror', 'v1', http=http)
-    service.timeline().insert(body=timeline_item).execute()
+    api_client.timeline().insert(body=timeline_item).execute()
 
 
 def generate_pm_html(pm):
@@ -274,7 +277,7 @@ def generate_pm_html(pm):
         ))
 
 
-def send_bundle_cover(credentials, bundle_id, post_count, pm_count, send_pm):
+def send_bundle_cover(api_client, bundle_id, post_count, pm_count, send_pm):
     timeline_item = {
         'html': generate_cover_html(post_count, pm_count, send_pm),
         'isBundleCover': True,
@@ -285,9 +288,7 @@ def send_bundle_cover(credentials, bundle_id, post_count, pm_count, send_pm):
     }
 
     logger.debug('Adding cover to timeline: {0:s}'.format(bundle_id))
-    http = credentials.authorize(Http())
-    service = discovery.build('mirror', 'v1', http=http)
-    service.timeline().insert(body=timeline_item).execute()
+    api_client.timeline().insert(body=timeline_item).execute()
 
 
 def generate_cover_html(post_count, pm_count, send_pm):

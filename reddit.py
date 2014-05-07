@@ -42,14 +42,11 @@ class RedditRateLimiter(object):
     def get(self, credentials, action):
         http = Http()
         http = credentials.authorize(http)
-        headers = {
-            'Authorization': 'bearer ' + credentials.access_token
-        }
 
         time_diff = datetime.now() - self.last_call
         if time_diff < self.rate:
             time.sleep(time_diff.total_seconds())
 
-        headers, content = http.request('https://oauth.reddit.com' + action, headers=headers)
+        headers, content = http.request('https://oauth.reddit.com' + action)
         return simplejson.loads(content)
 
