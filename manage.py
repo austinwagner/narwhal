@@ -200,10 +200,10 @@ def generate_post_html(post, subreddit):
 
 
 def get_image_url(post):
-    url = ImageUrlCache.query.filter_by(post_id=post['id']).first()
-    if url is not None:
+    url_query = ImageUrlCache.query.filter_by(post_id=post['id'])
+    if url_query.count() > 0:
         logger.debug('Cache hit for {0:s}'.format(post['id']))
-        return url
+        return url_query.first().url
 
     logger.debug('Cache miss for {0:s}'.format(post['id']))
     imgur_match = imgur_regex.search(post['url'])
