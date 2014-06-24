@@ -304,6 +304,10 @@ def settings():
                            email=account.email)
 
 
+@app.route('/privacy')
+def privacy_policy():
+    return render_template('privacy.html')
+
 def generate_csrf_token():
     return ''.join(random.choice(string.ascii_uppercase + string.digits)
                    for _ in xrange(32))

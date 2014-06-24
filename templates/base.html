@@ -19,8 +19,9 @@
 <hr/>
 <div class="footer">
     {% block footer %}
-        <a style="float: right" href="https://github.com/austinwagner/narwhal">Fork me on GitHub</a>
+        <a href="{{ url_for('privacy_policy') }}">Privacy Policy</a>
     {% endblock %}
+    <a style="float: right" href="https://github.com/austinwagner/narwhal">Fork me on GitHub</a>
 </div>
 </div>
 {% endblock %}
