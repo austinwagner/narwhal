@@ -5,7 +5,7 @@
 # modification, are permitted provided that the following conditions are met:
 #
 # 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
+# list of conditions and the following disclaimer.
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
@@ -30,16 +30,17 @@ from flask_sqlalchemy import SQLAlchemy
 from oauth2client.client import OAuth2WebServerFlow
 from sqlalchemy.exc import IntegrityError
 from OAuth2RedditFlow import OAuth2RedditFlow
-import random
+from random import SystemRandom
 import string
 from reddit import RedditRateLimiter
 import logging
 import logging.config
 import os.path
 from datetime import datetime
-from flaskext.kvsession import KVSessionExtension
+from flask.ext.kvsession import KVSessionExtension
 from simplekv.db.sql import SQLAlchemyStore
 import pytz
+from passlib.hash import pbkdf2_sha512
 
 
 logging_conf = '/etc/narwhal/logging.conf'
@@ -53,74 +54,115 @@ app.config.from_pyfile('config.py')
 db = SQLAlchemy(app)
 kv_store = SQLAlchemyStore(db.engine, db.metadata, 'kvstore')
 KVSessionExtension(kv_store, app)
+random = SystemRandom()
+
+
+class EmailError(Exception):
+    pass
+
+
+def send_verification_email():
+    pass
+
+
+def generate_verification_token():
+    return ''.join(random.choice(string.ascii_uppercase + string.digits)
+                   for _ in xrange(12))
+
+
+class NarwhalAccount(db.Model):
+    __tablename__ = 'NarwhalAccount'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(100))
+    password = db.Column(db.Text)
+    verified = db.Column(db.Boolean, default=False)
+    verification_token = db.Column(db.Text)
+    created_at = db.Column(db.DateTime(True))
+    settings = db.relationship('AccountSettings', uselist=False, backref='narwhal_account',
+                               cascade='all, delete, delete-orphan')
+    google_account = db.relationship('GoogleAccount', uselist=False, backref='narwhal_account',
+                                     cascade='all, delete, delete-orphan')
+    reddit_accounts = db.relationship('RedditAccount', backref='narwhal_account', cascade='all, delete, delete-orphan')
+    sent_posts = db.relationship('SentPost', lazy='dynamic', cascade='all, delete, delete-orphan')
+    sent_pms = db.relationship('SentPrivateMessage', lazy='dynamic', cascade='all, delete, delete-orphan')
+
+    def __init__(self, email, unhashed_password):
+        self.email = email
+        # passlib stores the salt and hashing method as part of the string so we don't need to store those separately
+        self.password = pbkdf2_sha512.encrypt(unhashed_password, salt_size=64, rounds=app.config['HASH_ROUNDS'])
+        self.created_at = datetime.now(pytz.utc)
+        self.verification_token = generate_verification_token()
+        print(self.id)
+
+    def password_matches(self, unhashed_password):
+        return pbkdf2_sha512.verify(unhashed_password, self.password)
+
+
+class PasswordReset(db.Model):
+    __tablename__ = 'PasswordReset'
+    narwhal_id = db.Column(db.Integer, db.ForeignKey('NarwhalAccount.id'), primary_key=True)
+    token = db.Column(db.Text)
+    expires = db.Column(db.DateTime(True))
 
 
 class GoogleAccount(db.Model):
     __tablename__ = 'GoogleAccount'
-    id = db.Column(db.String(80), primary_key=True)
+    narwhal_id = db.Column(db.Integer, db.ForeignKey('NarwhalAccount.id'), primary_key=True)
+    id = db.Column(db.String(80))
     credentials = db.Column(db.PickleType)
-    email = db.Column(db.String(256))
-    reddit_accounts = db.relationship('RedditAccount', backref='google_account',
-                                      cascade="all, delete, delete-orphan")
-    settings = db.relationship('AccountSettings', uselist=False,
-                               cascade="all, delete, delete-orphan")
-    sent_posts = db.relationship('SentPost', lazy='dynamic',
-                                 cascade="all, delete, delete-orphan")
-    sent_pms = db.relationship('SentPrivateMessage', lazy='dynamic',
-                               cascade="all, delete, delete-orphan")
     failed_at = db.Column(db.DateTime(True))
 
-    def __init__(self, google_id, credentials, email):
+    def __init__(self, narwhal_id, google_id, credentials):
+        self.narwhal_id = narwhal_id
         self.id = google_id
         self.credentials = credentials
-        self.email = email
 
 
 class RedditAccount(db.Model):
     __tablename__ = 'RedditAccount'
     id = db.Column(db.String(80), primary_key=True)
-    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    narwhal_id = db.Column(db.Integer, db.ForeignKey('NarwhalAccount.id'), primary_key=True)
     name = db.Column(db.String(256))
     credentials = db.Column(db.PickleType)
     failed_at = db.Column(db.DateTime(True))
 
-    def __init__(self, reddit_id, google_id, credentials, name):
+    def __init__(self, reddit_id, narwhal_id, credentials, name):
         self.id = reddit_id
-        self.google_id = google_id
+        self.narwhal_id = narwhal_id
         self.credentials = credentials
         self.name = name
 
 
 class AccountSettings(db.Model):
     __tablename__ = 'AccountSettings'
-    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    narwhal_id = db.Column(db.Integer, db.ForeignKey('NarwhalAccount.id'), primary_key=True)
     send_nsfw = db.Column(db.Boolean, default=False)
     send_pm = db.Column(db.Boolean, default=True)
     nsfw_overrides = db.Column(db.String(500), default='')
     post_limit = db.Column(db.Integer, default=15)
     group_posts = db.Column(db.Boolean, default=True)
 
-    def __init__(self, google_id):
-        self.google_id = google_id
+    def __init__(self, narwhal_id):
+        self.narwhal_id = narwhal_id
 
 
 class SentPost(db.Model):
     __tablename__ = 'SentPost'
-    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    narwhal_id = db.Column(db.Integer, db.ForeignKey('NarwhalAccount.id'), primary_key=True)
     post_id = db.Column(db.String(20), primary_key=True)
 
-    def __init__(self, google_id, post_id):
-        self.google_id = google_id
+    def __init__(self, narwhal_id, post_id):
+        self.narwhal_id = narwhal_id
         self.post_id = post_id
 
 
 class SentPrivateMessage(db.Model):
     __tablename__ = 'SentPrivateMessage'
-    google_id = db.Column(db.String(80), db.ForeignKey('GoogleAccount.id'), primary_key=True)
+    narwhal_id = db.Column(db.Integer, db.ForeignKey('NarwhalAccount.id'), primary_key=True)
     pm_id = db.Column(db.String(20), primary_key=True)
 
-    def __init__(self, google_id, pm_id):
-        self.google_id = google_id
+    def __init__(self, narwhal_id, pm_id):
+        self.narwhal_id = narwhal_id
         self.pm_id = pm_id
 
 
@@ -149,8 +191,7 @@ google_flow = OAuth2WebServerFlow(client_id=app.config['GOOGLE_CLIENT_ID'],
                                   client_secret=app.config['GOOGLE_CLIENT_SECRET'],
                                   redirect_uri=create_oauth_redirect_uri('google_authorize_callback'),
                                   scope=['profile',
-                                         'https://www.googleapis.com/auth/glass.timeline',
-                                         'email'],
+                                         'https://www.googleapis.com/auth/glass.timeline'],
                                   user_agent=app.config['USER_AGENT'])
 reddit = RedditRateLimiter()
 
@@ -166,44 +207,146 @@ def logout():
     return redirect(url_for('index'))
 
 
-@app.route('/login')
-def authenticate():
+def generate_auth_url(flow):
     state = generate_csrf_token()
     session['state'] = state
-    google_auth_url = google_flow.step1_get_authorize_url() + '&state=' + state
-    logger.info('{0:s}: Google authorization redirect to {1:s}'.format(request.remote_addr, google_auth_url))
-    return redirect(google_auth_url)
+    auth_url = flow.step1_get_authorize_url() + '&state=' + state
+    if flow is reddit_flow:
+        auth_url += '&duration=permanent'
+    return auth_url
+
+
+def validate_authorization(name):
+    if request.args['state'] != session['state']:
+        logger.warn('{0:s}: {3:s} authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
+                    .format(request.remote_addr, request.args['state'], session['state'], name))
+        abort(401)
+
+
+# TODO: Implement remember cookie
+@app.route('/login', methods=['GET', 'POST'])
+def authenticate():
+    error = False
+    if request.method == 'POST':
+        if request.form['csrf_token'] != session['csrf_token']:
+            logger.warn('{0:s}: Settings page csrf mismatch. Got "{1:s}", expected "{2:s}"'
+                        .format(request.remote_addr, request.form['csrf_token'], session['csrf_token']))
+            return abort(401)
+
+        if request.form['action'] == 'login':
+            acct = NarwhalAccount.query.filter_by(email=request.form['email']).first()
+            if acct is None or not acct.password_matches(request.form['password']):
+                error = True
+            elif not acct.verified:
+                session['account_id'] = acct.id
+                return redirect(url_for('verify_email'))
+            else:
+                session['account_id'] = acct.id
+                return reddit_account_login(acct)
+        else:
+            session['email'] = request.form['email']
+            session['password'] = request.form['password']
+            return redirect(url_for('create_account'))
+
+    session['csrf_token'] = generate_csrf_token()
+    return render_template('login.html', error=error, csrf_token=session['csrf_token'])
+
+
+@app.route('/create_account', methods=['GET', 'POST'])
+def create_account():
+    error = None
+    if request.method == 'POST':
+        if request.form['csrf_token'] != session['csrf_token']:
+            logger.warn('{0:s}: Account creation csrf mismatch. Got "{1:s}", expected "{2:s}"'
+                        .format(request.remote_addr, request.form['csrf_token'], session['csrf_token']))
+            return abort(401)
+
+        try:
+            if request.form['password'] != request.form['password_verify']:
+                error = 'password_mismatch'
+            else:
+                acct = NarwhalAccount(request.form['email'], request.form['password'])
+
+                with db.session.begin():
+                    db.session.add(acct)
+                    db.session.commit()
+                    db.session.add(AccountSettings(acct.id))
+                    db.session.commit()
+
+                session['account_id'] = acct.id
+                return redirect(url_for('verify_email'))
+        except IntegrityError:
+            error = 'email_taken'
+        except EmailError:  # TODO: Restrict to email sending errors
+            error = 'invalid_email'
+
+    session['csrf_token'] = generate_csrf_token()
+    return render_template('create_account.html', email=session['email'],
+                           password=session['password'], csrf_token=session['csrf_token'],
+                           error=error)
+
+
+@app.route('/verify_email', methods=['GET', 'POST'])
+def verify_email():
+    try:
+        acct = NarwhalAccount.query.filter_by(id=session['account_id']).first()
+        if acct.verified:
+            return reddit_account_login(acct)
+    except (KeyError, AttributeError):
+        return redirect(url_for('authenticate'))
+
+    error = False
+    if request.method == 'POST':
+        if request.form['csrf_token'] != session['csrf_token']:
+            logger.warn('{0:s}: Email verification csrf mismatch. Got "{1:s}", expected "{2:s}"'
+                        .format(request.remote_addr, request.form['csrf_token'], session['csrf_token']))
+            return abort(401)
+
+        if request.form['action'] == 'resend':
+            pass
+        else:
+            if acct.verification_token != request.form['token']:
+                error = True
+            else:
+                acct.verified = True
+                db.session.commit()
+                return reddit_account_login(acct)
+
+    session['csrf_token'] = generate_csrf_token()
+    return render_template('verify_email.html', csrf_token=session['csrf_token'], error=error)
+
+
+def reddit_account_login(acct):
+    if len(acct.reddit_accounts) == 0:
+        reddit_auth_url = generate_auth_url(reddit_flow)
+        logger.info('{0:s}: Reddit authorization redirect to {1:s}'.format(request.remote_addr, reddit_auth_url))
+        return redirect(reddit_auth_url)
+    else:
+        return google_account_login(acct)
+
+
+def google_account_login(acct):
+    if acct.google_account is None:
+        google_auth_url = generate_auth_url(google_flow)
+        logger.info('{0:s}: Google authorization redirect to {1:s}'.format(request.remote_addr, google_auth_url))
+        return redirect(google_auth_url)
+    else:
+        return redirect(url_for('settings'))
 
 
 @app.route('/google_authorize_callback')
 def google_authorize_callback():
-    if request.args['state'] != session['state']:
-        logger.warn('{0:s}: Google authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
-                    .format(request.remote_addr, request.args['state'], session['state']))
-        abort(401)
+    validate_authorization('google')
 
     credentials = google_flow.step2_exchange(request.args)
     user_id = credentials.id_token['id']
-    email = credentials.id_token['email']
 
-    if GoogleAccount.query.filter_by(id=user_id).count() == 0:
-        logger.debug('{0:s}: Saving Google authorization for user {1:s}'.format(request.remote_addr, email))
-        account = GoogleAccount(user_id, credentials, email)
-        account_settings = AccountSettings(user_id)
-        db.session.add(account)
-        db.session.add(account_settings)
-        db.session.commit()
-    else:
-        logger.debug('{0:s}: Found Google authorization for user {1:s}'.format(request.remote_addr, email))
+    acct = NarwhalAccount.query.filter_by(id=session['account_id']).first()
 
-    session['user_id'] = user_id
-
-    if RedditAccount.query.filter_by(google_id=user_id).count() == 0:
-        state = generate_csrf_token()
-        session['state'] = state
-        reddit_auth_url = reddit_flow.step1_get_authorize_url() + '&state=' + state + '&duration=permanent'
-        logger.info('{0:s}: Reddit authorization redirect to {1:s}'.format(request.remote_addr, reddit_auth_url))
-        return redirect(reddit_auth_url)
+    logger.debug('{0:s}: Saving Google authorization for user {1:s}'.format(request.remote_addr, acct.email))
+    google_account = GoogleAccount(acct.id, user_id, credentials)
+    db.session.add(google_account)
+    db.session.commit()
 
     logger.info('{0:s}: Redirect to /settings'.format(request.remote_addr))
     return redirect(url_for('settings'))
@@ -211,19 +354,19 @@ def google_authorize_callback():
 
 @app.route('/reddit_authorize_callback')
 def reddit_authorize_callback():
-    if request.args['state'] != session['state']:
-        logger.warn('{0:s}: Reddit authorization callback csrf mismatch. Got "{1:s}", expected "{2:s}"'
-                    .format(request.remote_addr, request.args['state'], session['state']))
-        return abort(401)
+    validate_authorization('reddit')
 
     if request.args.get('error') == 'access_denied':
-        return redirect(url_for('settings'))
+        logger.warn('{0:s}: Access denied from reddit oauth'.format(request.remote_addr))
+        return redirect(url_for('authenticate'))
 
     credentials = reddit_flow.step2_exchange(request.args)
     user = reddit.get(credentials, '/api/v1/me')
 
+    acct = NarwhalAccount.query.filter_by(id=session['account_id']).first()
+
     try:
-        reddit_account = RedditAccount(user['id'], session['user_id'], credentials, user['name'])
+        reddit_account = RedditAccount(user['id'], acct.id, credentials, user['name'])
         db.session.add(reddit_account)
         db.session.commit()
     except IntegrityError:
@@ -307,6 +450,7 @@ def settings():
 @app.route('/privacy')
 def privacy_policy():
     return render_template('privacy.html')
+
 
 def generate_csrf_token():
     return ''.join(random.choice(string.ascii_uppercase + string.digits)

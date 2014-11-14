@@ -4,6 +4,6 @@
     <type id="django" />
   </component>
   <component name="IdProvider" IDEtalkID="5BDE8E552C051B0A6B7E11A457AAE54B" />
-  <component name="ProjectRootManager" version="2" languageLevel="JDK_1_6" assert-keyword="true" jdk-15="true" project-jdk-name="Remote Python 2.7.3 (ssh://vagrant@127.0.0.1:2222/usr/bin/python)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" languageLevel="JDK_1_6" assert-keyword="true" jdk-15="true" project-jdk-name="Python 2.7.6 virtualenv at D:\Programs\VirtualEnvs\RedditToGlass" project-jdk-type="Python SDK" />
 </project>
 

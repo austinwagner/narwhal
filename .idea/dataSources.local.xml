@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="dataSourceStorageLocal">
+    <data-source name="PostgreSQL - reddit_to_glass@localhost" uuid="9ca6c6e1-f491-4121-b22f-29672649f6ff">
+      <user-name>postgres</user-name>
+      <user-password>dfccdf8bdfdfdf9ddf9ddfcfdff8dfd9dfc2dfd3df99</user-password>
+    </data-source>
+  </component>
+</project>

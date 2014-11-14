@@ -38,6 +38,8 @@ from uuid import uuid1
 from datetime import datetime
 import pytz
 from apiclient.http import BatchHttpRequest
+import urllib
+import json
 
 logger = logging.getLogger(__name__)
 manager = Manager(app)
@@ -203,6 +205,40 @@ def generate_post_html(post, subreddit):
     return html
 
 
+def get_cropped_image_url(url, width, height):
+    return 'https://i.embed.ly/1/display/crop?key=' + app.config['EMBEDLY_KEY'] + '&width' + str(width) + \
+           '&height' + str(height) + '&url=' + urllib.quote(url.encode('utf8'))
+
+
+def get_image_url_from_embedly(url):
+    embedly_request_url = 'http://api.embed.ly/1/extract?key=' + app.config['EMBEDLY_KEY'] + \
+                          '&url=' + urllib.quote(url.encode('utf8'))
+    http = Http()
+    resp, content = http.request(embedly_request_url)
+    if resp != 200:
+        return None
+    result = json.loads(content)
+    try:
+        return result['images'][0]['url']
+    except (KeyError, IndexError):
+        return None
+
+
+def get_image_url_from_imgur(url):
+    imgur_match = imgur_regex.search(url)
+    if imgur_match:
+        if imgur_match.group('type') is not None:
+            return get_imgur_cover_url(url)
+        else:
+            # Extension doesn't matter to Imgur but it needs to have one
+            # 'l' indicates large thumbnail
+            return 'https://i.imgur.com/' + imgur_match.group('id') + 'l.jpg'
+    elif image_ext_regex.search(url):
+        return url
+    else:
+        return None
+
+
 def get_image_url(post):
     url_query = ImageUrlCache.query.filter_by(post_id=post['id'])
     if url_query.count() > 0:
@@ -210,18 +246,7 @@ def get_image_url(post):
         return url_query.first().url
 
     logger.debug('Cache miss for {0:s}'.format(post['id']))
-    imgur_match = imgur_regex.search(post['url'])
-    if imgur_match:
-        if imgur_match.group('type') is not None:
-            url = get_imgur_cover_url(post['url'])
-        else:
-            # Extension doesn't matter to Imgur but it needs to have one
-            # 'l' indicates large thumbnail
-            url = 'https://i.imgur.com/' + imgur_match.group('id') + 'l.jpg'
-    elif image_ext_regex.search(post['url']):
-        url = post['url']
-    else:
-        url = None
+    url = get_image_url_from_embedly(post['url'])
 
     db.session.add(ImageUrlCache(post['id'], url))
     db.session.commit()

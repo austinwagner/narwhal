@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Narwhal Login{% endblock %}
+
+{% block content %}
+    <form role="form" action="{{ url_for('verify_email') }}" method="post">
+        <div class="form-group">
+            <label for="token">Verification token</label>
+            <input type="text" class="form-control" id="token" name="token">
+        </div>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
+        <button type="submit" name="action" value="verify" class="btn btn-default">Verify</button>
+        <button type="submit" name="action" value="resend" class="btn">Resend Verification Email</button>
+    </form>
+{% endblock %}

@@ -26,7 +26,7 @@
 # either expressed or implied, of the FreeBSD Project.
 
 from httplib2 import Http
-from oauth2client.anyjson import simplejson
+import json
 import logging
 from datetime import datetime, timedelta
 import time
@@ -48,5 +48,5 @@ class RedditRateLimiter(object):
             time.sleep(time_diff.total_seconds())
 
         headers, content = http.request('https://oauth.reddit.com' + action)
-        return simplejson.loads(content)
+        return json.loads(content)
 
